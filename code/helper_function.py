@@ -215,8 +215,16 @@ def pipeline(img_distorted, s_thresh=(170, 255), sx_thresh=(20, 100)):
     combined_binary[(combined[:,:,0]==1) | (combined[:,:,1]==1)|(combined[:,:,2]==1)]=1
 
 
-    warped,M=warp(combined_binary)
+    warped,M,lines=warp(combined_binary)
 
+    #uncomment to see if the trapezoidal is OK
+    # line_image_blank = np.zeros((img.shape[0], img.shape[1],3), dtype=np.uint8)
+    # out_img = np.asarray(np.dstack((warped, warped, warped)), np.float64)
+    # draw_lines(line_image_blank, lines, color=[255, 0, 0], thickness=10)
+    # line_image_blank=np.asarray(line_image_blank, np.float64)
+    # print out_img.shape, line_image_blank.shape
+    # lines_overlayed_image=cv2.addWeighted(out_img, 0.8, line_image_blank, 1., 0.)
+    # return lines_overlayed_image
     
     left_fitx, right_fitx, ploty=fit_polynomial(warped)
 
@@ -257,7 +265,15 @@ def draw_lines(img, lines, color=[255, 0, 0], thickness=2):
 
 def get_warp_params(img):
 
-    src_corners=[[595,450],[690,450],[200,img.shape[0]],[1140,img.shape[0]]]
+    global i
+    #original
+    src_corners=[[[595,450],[690,450],[200,img.shape[0]],[1140,img.shape[0]]],
+
+    #short, not working for all
+    [[449,550],[857,550],[200,img.shape[0]],[1140,img.shape[0]]],
+
+    # another
+    [[552,480],[740,480],[200,img.shape[0]],[1140,img.shape[0]]]][i]
 
     dst_x1=340
 
@@ -274,23 +290,38 @@ def get_warp_params(img):
     return src, dst, lines
     
 
-def warp(img, src=None, dst=None, lines=None):
+def warp(img, src=None, dst=None):
     
-    if src and dst:
-        pass
-    else:
+    if not (src and dst):
         src, dst, lines = get_warp_params(img)
 
     M = cv2.getPerspectiveTransform(src, dst)
     
     warped = cv2.warpPerspective(img, M, img.shape[:2][::-1], flags=cv2.INTER_LINEAR) 
 
-    if lines:
-        draw_lines(warped,lines)
+
     
-    return warped, M
+    return warped, M,lines
 
+def warp_back(warped,m,left_fitx, right_fitx, ploty):
 
+    warp_zero = np.zeros_like(warped).astype(np.uint8)
+    color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    center=abs(np.average(pts_right[-1][0][0]+pts_left[-1][0][0])//2-warped.shape[1]//2)
+    print(pts_right)
+    # Draw the lane onto the warped blank image
+    cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
+    invertible,m_inv=cv2.invert(m)
+    # Warp the blank back to original image space using inverse perspective matrix (Minv)
+    newwarp = cv2.warpPerspective(color_warp, m_inv, (color_warp.shape[1], color_warp.shape[0])) 
+
+    return newwarp,center
 
 
 def find_lane_pixels(binary_warped, draw_windows=False):
@@ -452,48 +483,6 @@ def fit_polynomial(binary_warped, history_size=12):
     return left_fitx, right_fitx, ploty
 
 
-def warp_back(warped,m,left_fitx, right_fitx, ploty):
-
-    warp_zero = np.zeros_like(warped).astype(np.uint8)
-    color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
-
-    # Recast the x and y points into usable format for cv2.fillPoly()
-    pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
-    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
-    pts = np.hstack((pts_left, pts_right))
-
-    center=abs(np.average(pts_right[0][0]+pts_left[0][0])//2-warped.shape[1]//2)
-    print(pts_right)
-    # Draw the lane onto the warped blank image
-    cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
-    invertible,m_inv=cv2.invert(m)
-    # Warp the blank back to original image space using inverse perspective matrix (Minv)
-    newwarp = cv2.warpPerspective(color_warp, m_inv, (color_warp.shape[1], color_warp.shape[0])) 
-
-    return newwarp,center
-
-def shadow_mix(img1, img2, alpha=1, beta=0.3, gamma=0):
-    
-    # Combine the result with the original image
-    result = cv2.addWeighted(img1, alpha, img2, beta, gamma)
-
-    return result
-
-def image_test():
-    
-    img=mpimg.imread("../test_images/straight_lines1.jpg")
-
-    ret=pipeline(img)
-    
-    plt.imshow(ret)
-    
-    plt.show()
-    
-    cv2.waitKey(500)
-    
-    plt.close()
-
-
 def measure_curvature_pixels(image_shape,ym_per_pix = 30.0/720,xm_per_pix = 3.7/700): # meters per pixel in y dimension , # meters per pixel in x dimension
      
     '''
@@ -526,13 +515,43 @@ def measure_curvature_pixels(image_shape,ym_per_pix = 30.0/720,xm_per_pix = 3.7/
    
     return left_curverad, right_curverad
 
+def shadow_mix(img1, img2, alpha=1, beta=0.3, gamma=0):
+    
+    # Combine the result with the original image
+    result = cv2.addWeighted(img1, alpha, img2, beta, gamma)
+
+    return result
+
+
+def image_test():
+    
+    img=mpimg.imread("../test_images/straight_lines2.jpg")
+
+    ret=pipeline(img)
+    
+    plt.imshow(ret)
+    
+    plt.show()
+    
+    cv2.waitKey(500)
+    
+    plt.close()
+
+
+
+
 def video_test():
-    for vid in ['project_video', 'challenge_video', 'harder_challenge_video']:
+    global i
+    j=[0,0,2]
+    k=0
+    for vid in ['project_video', 'challenge_video', 'harder_challenge_video']:#'project_video', 'challenge_video', 'harder_challenge_video'
         clip1 = VideoFileClip('../'+vid+'.mp4')
         
         white_clip = clip1.fl_image(process_image)
         
         white_clip.write_videofile(vid+'_processed.mp4', audio=False)
+        i=j[k]
+        k+=1
 
 def process_image(img):
     return pipeline(img)
@@ -540,7 +559,7 @@ def process_image(img):
 if __name__ == '__main__':
     
     window_searched=False
-
+    i=0
     left_fit_gloabl = []
     right_fit_gloabl = []
     window_searched =False
