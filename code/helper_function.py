@@ -1,4 +1,5 @@
 import numpy as np
+from collections import deque
 import cv2
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
@@ -23,7 +24,56 @@ from moviepy.editor import VideoFileClip
 # need a class later for these params
 
 
+class Lane():
+    def __init__(self):
+        self.left_line=Line()
 
+        self.right_line=Line()
+
+        self.window_searched=False
+
+        self.center=None
+
+        self.first_iteration=True
+
+class Line():
+    def __init__(self):
+        # was the line detected in the last iteration?
+        self.detected = False 
+
+        # x values of the last n fits of the line
+        self.recent_xfitted = [] 
+
+        #average x values of the fitted line over the last n iterations
+        self.bestx = None    
+
+        #polynomial coefficients  history
+        self.recent_fits=deque(maxlen=4)
+
+        #polynomial coefficients averaged over the last n iterations
+        self.best_fit = None  
+
+        #polynomial coefficients for the most recent fit
+        self.current_fit = [np.array([False])]  
+
+        #radius of curvature of the line in some units
+        self.radius_of_curvature = None 
+
+        #distance in meters of vehicle center from the line
+        self.line_base_pos = None 
+
+        #difference in fit coefficients between last and new fits
+        self.diffs = np.array([0,0,0], dtype='float') 
+
+        #x values for detected line pixels
+        self.allx = None  
+
+        #y values for detected line pixels
+        self.ally = None 
+
+        self.continuos_failures=0
+
+        self.window_searched=False
 
 def calibrate( nx, ny, calib_folder_address, file_name_prefix,show_chess_corners=False,undistort_an_example=True): # calibrate the camera based on the given images
 
@@ -176,7 +226,7 @@ def color_threshold(img, color_threshold=(90, 255), channel='s'): # channels: r 
 
     return col_binary
 
-def pipeline(img_distorted, s_thresh=(170, 255), sx_thresh=(20, 100)):
+def pipeline(img_distorted, Lane, s_thresh=(170, 255), sx_thresh=(20, 100)):
     
     img=undistort(img_distorted)
 
@@ -186,13 +236,13 @@ def pipeline(img_distorted, s_thresh=(170, 255), sx_thresh=(20, 100)):
 
     col_bin_r=color_threshold(img, s_thresh, 'r')
     
-    mag_bin=mag_thresh(img, 3, (30, 100))
+    # mag_bin=mag_thresh(img, 3, (30, 100))
     
-    dir_bin=dir_threshold(img,15, (0.7, 1.3))
+    # dir_bin=dir_threshold(img,15, (0.7, 1.3))
     
-    sobel_x_bin=abs_sobel_thresh(img,'x', (20,100))
+    # sobel_x_bin=abs_sobel_thresh(img,'x', (20,100))
     
-    sobel_y_bin=abs_sobel_thresh(img,'y')
+    # sobel_y_bin=abs_sobel_thresh(img,'y')
     
     
     #print (col_bin.shape, sobel_x_bin.shape, sobel_y_bin.shape, mag_bin.shape,dir_bin.shape)
@@ -201,9 +251,12 @@ def pipeline(img_distorted, s_thresh=(170, 255), sx_thresh=(20, 100)):
     
     #ret[(col_bin_s==1) &((dir_bin==1) |(mag_bin ==1)) | ((sobel_x_bin == 1)& (sobel_y_bin == 1) & (col_bin_r==1))] = 1
     
-    combined[((col_bin_r==1) &(col_bin_s==1)) | ((sobel_x_bin==1)&(mag_bin==1)) | ((dir_bin==1)&(sobel_x_bin==1))] = 1
+    # combined[((col_bin_r==1) &(col_bin_s==1)) | ((sobel_x_bin==1)&(mag_bin==1)) | ((dir_bin==1)&(sobel_x_bin==1))] = 1#  kheili khubea
 
-    #ret[((col_bin_r==1) &(col_bin_s==1)) | ((sobel_x_bin==1)&(mag_bin==1)) | ((dir_bin==1)&(sobel_x_bin==1))] = 1   kheili khubea
+    #surprisingly good specially for the second video
+    combined[((col_bin_r==1) |(col_bin_s==1))] = 1
+
+    #ret[((col_bin_r==1) &(col_bin_s==1)) | ((sobel_x_bin==1)&(mag_bin==1)) | ((dir_bin==1)&(sobel_x_bin==1))] = 1 
     #print (ret.shape,ret)
     
     #print (col_bin.shape, sobel_x_bin.shape)
@@ -215,25 +268,28 @@ def pipeline(img_distorted, s_thresh=(170, 255), sx_thresh=(20, 100)):
     combined_binary[(combined[:,:,0]==1) | (combined[:,:,1]==1)|(combined[:,:,2]==1)]=1
 
 
-    warped,M,lines=warp(combined_binary)
+    warped,M,indicator_lines=warp(combined_binary)
 
     #uncomment to see if the trapezoidal is OK
     # line_image_blank = np.zeros((img.shape[0], img.shape[1],3), dtype=np.uint8)
     # out_img = np.asarray(np.dstack((warped, warped, warped)), np.float64)
-    # draw_lines(line_image_blank, lines, color=[255, 0, 0], thickness=10)
+    # draw_lines(line_image_blank, indicator_lines, color=[255, 0, 0], thickness=10)
     # line_image_blank=np.asarray(line_image_blank, np.float64)
     # print out_img.shape, line_image_blank.shape
     # lines_overlayed_image=cv2.addWeighted(out_img, 0.8, line_image_blank, 1., 0.)
     # return lines_overlayed_image
     
-    left_fitx, right_fitx, ploty=fit_polynomial(warped)
+    #left_fitx, right_fitx, ploty
+    Lane=fit_polynomial(warped, Lane)
 
-    res,center=warp_back(warped,M,left_fitx, right_fitx, ploty)
+    res,Lane=warp_back(warped,M,Lane)
 
     # print(res.shape,img_distorted.shape)
-    cur_x,curv_y=measure_curvature_pixels(res.shape)
+    Lane=measure_curvature_pixels(res.shape,Lane)
 
     return_image=shadow_mix(img_distorted,res)
+
+    # VIDEO Printing
 
     font = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -247,9 +303,9 @@ def pipeline(img_distorted, s_thresh=(170, 255), sx_thresh=(20, 100)):
     # Line thickness of 2 px 
     thickness = 2
 
-    curv_x_text='Radius of Curvature: '+ str(round(cur_x,2))+ " Meters" if cur_x<3000 else "Strait Lines"
+    curv_x_text='Radius of Curvature: '+ str(round(Lane.right_line.radius_of_curvature,2))+ " Meters" if Lane.right_line.radius_of_curvature<3000 else "Strait Lines"
 
-    cv2.putText(return_image, curv_x_text+ ", Center Offset: "+str(round(center*3.7/700,2)), org, font,  fontScale, color, thickness, cv2.LINE_AA) 
+    cv2.putText(return_image, curv_x_text+ ", Center Offset: "+str(round(Lane.center*3.7/700,2)), org, font,  fontScale, color, thickness, cv2.LINE_AA) 
 
     cv2.putText(return_image,"Shervin Ghasemlou", (500,700), font,  0.8, (255,0,0), 3, cv2.LINE_AA)
     return return_image
@@ -265,15 +321,15 @@ def draw_lines(img, lines, color=[255, 0, 0], thickness=2):
 
 def get_warp_params(img):
 
-    global i
+    # global i
     #original
-    src_corners=[[[595,450],[690,450],[200,img.shape[0]],[1140,img.shape[0]]],
+    src_corners=[[595,450],[690,450],[200,img.shape[0]],[1140,img.shape[0]]]#,
 
     #short, not working for all
-    [[449,550],[857,550],[200,img.shape[0]],[1140,img.shape[0]]],
+    #src_corners=[[449,550],[857,550],[200,img.shape[0]],[1140,img.shape[0]]],
 
-    # another
-    [[552,480],[740,480],[200,img.shape[0]],[1140,img.shape[0]]]][i]
+    # # another
+    #src_corners= [[552,480],[740,480],[200,img.shape[0]],[1140,img.shape[0]]]
 
     dst_x1=340
 
@@ -303,25 +359,25 @@ def warp(img, src=None, dst=None):
     
     return warped, M,lines
 
-def warp_back(warped,m,left_fitx, right_fitx, ploty):
+def warp_back(warped,m,Lane):
 
     warp_zero = np.zeros_like(warped).astype(np.uint8)
     color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
 
     # Recast the x and y points into usable format for cv2.fillPoly()
-    pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
-    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+    pts_left = np.array([np.transpose(np.vstack([Lane.left_line.allx, Lane.left_line.ally]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([Lane.right_line.allx, Lane.right_line.ally])))])
     pts = np.hstack((pts_left, pts_right))
 
-    center=abs(np.average(pts_right[-1][0][0]+pts_left[-1][0][0])//2-warped.shape[1]//2)
-    print(pts_right)
+    Lane.center=(pts_right[-1][0][0]+pts_left[-1][0][0])//2-warped.shape[1]//2
+
     # Draw the lane onto the warped blank image
     cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
     invertible,m_inv=cv2.invert(m)
     # Warp the blank back to original image space using inverse perspective matrix (Minv)
     newwarp = cv2.warpPerspective(color_warp, m_inv, (color_warp.shape[1], color_warp.shape[0])) 
 
-    return newwarp,center
+    return newwarp,Lane
 
 
 def find_lane_pixels(binary_warped, draw_windows=False):
@@ -398,12 +454,12 @@ def find_lane_pixels(binary_warped, draw_windows=False):
         #pass # Remove this when you add your function
 
     # Concatenate the arrays of indices (previously was a list of lists of pixels)
-    try:
-        left_lane_inds = np.concatenate(left_lane_inds)
-        right_lane_inds = np.concatenate(right_lane_inds)
-    except ValueError:
-        # Avoids an error if the above is not implemented fully
-        print("Shervin Error => Some problem with either left or right lane indices")
+    # try:
+    left_lane_inds = np.concatenate(left_lane_inds)
+    right_lane_inds = np.concatenate(right_lane_inds)
+    # except ValueError:
+    #     # Avoids an error if the above is not implemented fully
+    #     print("Shervin Error => Some problem with either left or right lane indices")
 
     # Extract left and right line pixel positions
     leftx = nonzerox[left_lane_inds]
@@ -413,7 +469,7 @@ def find_lane_pixels(binary_warped, draw_windows=False):
 
     return leftx, lefty, rightx, righty
 
-def search_around_poly(binary_warped,history_size=12):
+def search_around_poly(binary_warped,Lane):
     # HYPERPARAMETER
     # Choose the width of the margin around the previous polynomial to search
     # The quiz grader expects 100 here, but feel free to tune on your own!
@@ -424,8 +480,8 @@ def search_around_poly(binary_warped,history_size=12):
     nonzeroy = np.array(nonzero[0])
     nonzerox = np.array(nonzero[1])
     
-    left_fit_gloabl_avg=np.average(left_fit_gloabl[-history_size:],axis=0)
-    right_fit_gloabl_avg=np.average(right_fit_gloabl[-history_size:],axis=0)
+    left_fit_gloabl_avg=np.average(Lane.left_line.recent_fits,axis=0)
+    right_fit_gloabl_avg=np.average(Lane.right_line.recent_fits,axis=0)
     ### TO-DO: Set the area of search based on activated x-values ###
     ### within the +/- margin of our polynomial function ###
     ### Hint: consider the window areas for the similarly named variables ###
@@ -442,48 +498,98 @@ def search_around_poly(binary_warped,history_size=12):
 
     return leftx, lefty, rightx, righty
 
-def fit_polynomial(binary_warped, history_size=12):
+def  fit_polynomial(binary_warped, Lane, parallel_thresh=0.0005, coef_change_thresh=0.1):
     # Find our lane pixels first
-    global left_fit_gloabl, right_fit_gloabl, window_searched
-    if window_searched:
-        leftx, lefty, rightx, righty = search_around_poly(binary_warped) 
+    #global left_fit_gloabl, right_fit_gloabl, window_searched
+
+
+    if Lane.window_searched:
+        leftx, lefty, rightx, righty = search_around_poly(binary_warped, Lane) 
     else:
         leftx, lefty, rightx, righty = find_lane_pixels(binary_warped)
-        window_searched=True
+        Lane.window_searched=True
     
 
     ### TO-DO: Fit a second order polynomial to each using `np.polyfit` ###
-    left_fit_gloabl_prefit = np.polyfit(lefty,leftx,2)# prefit because we want to check curvature before updating the global polyfit
-    right_fit_gloabl_prefit = np.polyfit(righty,rightx,2)
+    if len(lefty)>0 and len(leftx)>0:
+        Lane.left_line.current_fit = np.polyfit(lefty,leftx,2)# prefit because we want to check curvature before updating the global polyfit
+        Lane.left_line.detected=True
+
+    if len(righty)>0 and len(rightx)>0:
+        Lane.right_line.current_fit = np.polyfit(righty,rightx,2)
+        Lane.right_line.detected=True
+
+    ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0] )
 
     # print (np.sign(left_fit_gloabl_prefit[0]),np.sign(right_fit_gloabl_prefit[0]))
 
-    if np.sign(left_fit_gloabl_prefit[0])== np.sign(right_fit_gloabl_prefit[0]):
-        left_fit_gloabl.append(left_fit_gloabl_prefit)
-        right_fit_gloabl.append(right_fit_gloabl_prefit)
+    # decide to reset windowing or skip the current frame
+    decision_factors_coef_sign=np.sign(Lane.left_line.current_fit[0])== np.sign(Lane.right_line.current_fit[0])
+
+    decision_factors_coef_parallel=abs(Lane.right_line.current_fit[0]-Lane.left_line.current_fit[0])<parallel_thresh
+
+    decision_factors_right_line_reasonable_change=Lane.right_line.recent_fits and abs(Lane.right_line.recent_fits[-1][0]-Lane.right_line.current_fit[0])<coef_change_thresh
+
+    decision_factors_left_line_reasonable_change=Lane.left_line.recent_fits and abs(Lane.left_line.recent_fits[-1][0]-Lane.left_line.current_fit[0])<coef_change_thresh
+
+    
+    left_fitx_bottom=Lane.left_line.current_fit[0]*ploty[-1]**2 + Lane.left_line.current_fit[1]*ploty[-1] + Lane.left_line.current_fit[2]
+
+    right_fitx_bottom=Lane.right_line.current_fit[0]*ploty[-1]**2 + Lane.right_line.current_fit[1]*ploty[-1] + Lane.right_line.current_fit[2]
+
+    decision_factors_bottm_point_left=left_fitx_bottom<binary_warped.shape[1]//2
+
+    decision_factors_bottm_point_right=right_fitx_bottom>binary_warped.shape[1]//2
+
+    left_fitx_top=Lane.left_line.current_fit[0]*ploty[0]**2 + Lane.left_line.current_fit[1]*ploty[0] + Lane.left_line.current_fit[2]
+
+    right_fitx_top=Lane.right_line.current_fit[0]*ploty[0]**2 + Lane.right_line.current_fit[1]*ploty[0] + Lane.right_line.current_fit[2]
+
+    decision_factors_top_points=right_fitx_top>left_fitx_top
+
+    # print ("df2",decision_factors_coef_parallel)
+
+
+    if Lane.first_iteration:
+        Lane.first_iteration=False
+
+        Lane.left_line.recent_fits.append(Lane.left_line.current_fit)
+
+        Lane.right_line.recent_fits.append(Lane.right_line.current_fit)
+
+    elif decision_factors_coef_sign and decision_factors_coef_parallel and decision_factors_top_points:
+
+        if decision_factors_right_line_reasonable_change and  decision_factors_bottm_point_right and decision_factors_left_line_reasonable_change and decision_factors_bottm_point_left:
+            Lane.right_line.recent_fits.append(Lane.right_line.current_fit)
+            Lane.left_line.recent_fits.append(Lane.left_line.current_fit)
+
     else:
+        print("ah again")
         window_searched=True
 
 
-    left_fit_gloabl_avg=np.average(left_fit_gloabl[-history_size:], axis=0)
-    right_fit_gloabl_avg=np.average(right_fit_gloabl[-history_size:], axis=0)
+
+    left_fit_gloabl_avg=np.average(Lane.left_line.recent_fits, axis=0)
+    right_fit_gloabl_avg=np.average(Lane.right_line.recent_fits, axis=0)
 
     # Generate x and y values for plotting
-    ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0] )
-    try:
-        left_fitx = left_fit_gloabl_avg[0]*ploty**2 + left_fit_gloabl_avg[1]*ploty + left_fit_gloabl_avg[2]
-        right_fitx = right_fit_gloabl_avg[0]*ploty**2 + right_fit_gloabl_avg[1]*ploty + right_fit_gloabl_avg[2]
-    except TypeError:
-        # Avoids an error if `left` and `right_fit` are still none or incorrect
-        print('The function failed to fit a line!')
-        left_fitx = 1*ploty**2 + 1*ploty
-        right_fitx = 1*ploty**2 + 1*ploty
+    # try:
+    Lane.left_line.allx = left_fit_gloabl_avg[0]*ploty**2 + left_fit_gloabl_avg[1]*ploty + left_fit_gloabl_avg[2]
+    Lane.left_line.ally=ploty
+
+    Lane.right_line.allx = right_fit_gloabl_avg[0]*ploty**2 + right_fit_gloabl_avg[1]*ploty + right_fit_gloabl_avg[2]
+    Lane.right_line.ally=ploty
+    # except TypeError:
+    #     # Avoids an error if `left` and `right_fit` are still none or incorrect
+    #     print('The function failed to fit a line!')
+    #     left_fitx = 1*ploty**2 + 1*ploty
+    #     right_fitx = 1*ploty**2 + 1*ploty
 
 
-    return left_fitx, right_fitx, ploty
+    return Lane
 
 
-def measure_curvature_pixels(image_shape,ym_per_pix = 30.0/720,xm_per_pix = 3.7/700): # meters per pixel in y dimension , # meters per pixel in x dimension
+def measure_curvature_pixels(image_shape,Lane,ym_per_pix = 30.0/720,xm_per_pix = 3.7/700): # meters per pixel in y dimension , # meters per pixel in x dimension
      
     '''
     Calculates the curvature of polynomial functions in pixels.
@@ -494,26 +600,26 @@ def measure_curvature_pixels(image_shape,ym_per_pix = 30.0/720,xm_per_pix = 3.7/
     # Define y-value where we want radius of curvature
     # We'll choose the maximum y-value, corresponding to the bottom of the image
 
-    global left_fit_gloabl, right_fit_gloabl, window_searched
+    
 
-    left_fit_gloabl_avg_5=np.average(left_fit_gloabl[-2:],axis=0)
-    right_fit_gloabl_avg_5=np.average(right_fit_gloabl[-2:],axis=0)   
+    # left_fit_gloabl_avg=
+    # right_fit_gloabl_avg=np.average(Lane.right_line.allx[-2:],axis=0)   
     
     ploty = np.linspace(0, 719, num=720)
     y_eval = np.max(ploty)
 
-    left_fitx = left_fit_gloabl_avg_5[0]*ploty**2 + left_fit_gloabl_avg_5[1]*ploty + left_fit_gloabl_avg_5[2]
-    right_fitx = right_fit_gloabl_avg_5[0]*ploty**2 + right_fit_gloabl_avg_5[1]*ploty + right_fit_gloabl_avg_5[2]
+    # left_fitx = np.average(,axis=0)
+    # right_fitx = np.average(Lane.right_line.allx,axis=0)   
     ##### TO-DO: Implement the calculation of R_curve (radius of curvature) #####
-
-    left_fit_cr = np.polyfit(ploty*ym_per_pix, left_fitx*xm_per_pix, 2)
-    right_fit_cr = np.polyfit(ploty*ym_per_pix, right_fitx*xm_per_pix, 2)
-    Al,Bl=left_fit_gloabl_avg_5[:2]
-    Ar,Br=right_fit_gloabl_avg_5[:2]
-    left_curverad = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
-    right_curverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
+    # print(ploty)#, left_fitx)
+    left_fit_cr = np.polyfit(ploty*ym_per_pix, Lane.left_line.allx*xm_per_pix, 2)
+    right_fit_cr = np.polyfit(ploty*ym_per_pix, Lane.right_line.allx*xm_per_pix, 2)
+    Al,Bl=Lane.left_line.current_fit[:2]
+    Ar,Br=Lane.right_line.current_fit[:2]
+    Lane.left_line.radius_of_curvature = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
+    Lane.right_line.radius_of_curvature = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
    
-    return left_curverad, right_curverad
+    return Lane
 
 def shadow_mix(img1, img2, alpha=1, beta=0.3, gamma=0):
     
@@ -544,21 +650,24 @@ def video_test():
     global i
     j=[0,0,2]
     k=0
-    for vid in ['project_video', 'challenge_video', 'harder_challenge_video']:#'project_video', 'challenge_video', 'harder_challenge_video'
+    for vid in ['project_video','challenge_video', 'harder_challenge_video']:#'project_video', 'challenge_video', 'harder_challenge_video'
         clip1 = VideoFileClip('../'+vid+'.mp4')
-        
-        white_clip = clip1.fl_image(process_image)
+
+   
+        L=Lane()
+        white_clip = clip1.fl_image(lambda img:process_image(img,L))
         
         white_clip.write_videofile(vid+'_processed.mp4', audio=False)
         i=j[k]
         k+=1
 
-def process_image(img):
-    return pipeline(img)
+def process_image(img, Lane):
+    # global Lane
+    return pipeline(img, Lane)
 
 if __name__ == '__main__':
     
-    window_searched=False
+
     i=0
     left_fit_gloabl = []
     right_fit_gloabl = []
